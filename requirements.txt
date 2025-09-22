@@ -1,0 +1,10 @@
+dash~=3.1.1
+dash-bootstrap-components
+pandas~=2.3.1
+plotly~=6.2.0
+snowflake-connector-python
+gunicorn
+
+
+
+
