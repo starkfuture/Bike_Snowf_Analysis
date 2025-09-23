@@ -10,7 +10,12 @@ import sys
 #   - Optional plotly-resampler integration (if available).
 #   - Basic Flask-Caching to memoize Snowflake reads per VIN/ride/range.
 #   - Lighter legend by default-hiding very dense groups (Cells).
+#   23092025: Adding error codes, creating logging.
 #-------------------------------------------------------------------
+
+
+version = 2.0
+
 HIDE_BUTTONS = {
     'DC Link', 'DC Bus', 'Cable Damaged', 'Battery V-', 'Battery V+',
     'throttle_not_closed_on_engage', 'throttle_not_closed_on_turning_on', 'DC Bus Δ',
@@ -129,6 +134,8 @@ def get_columns_for_vin(vin):
         'throttle_not_closed_on_engage', 'throttle_not_closed_on_turning_on',
         'charger_connected', 'charger_plugged', 'charging_current',
         'gyro_x', 'gyro_y', 'gyro_z', 'pump_current', 'battery_current','motor_rpm',
+        # ERROR CODES
+        'motor_error','insulation_error','derating_battery_error','derating_igbt_error',
     ]
 
     cells = ['cell_a_idx','cell_a_voltage','cell_b_idx','cell_b_voltage',
@@ -206,7 +213,7 @@ FAULT_BIT_MAP = {
 
 # -------------------- Layout --------------------
 app.layout = dbc.Container([
-    html.H1("🔋 Bike Analysis Tool — Fast"),
+    html.H1(f"🔋 Bike Analysis Tool — v{version}"),
 
     dbc.Row([
         dbc.Col(dbc.Input(id="email-input", placeholder="Enter Snowflake email", type="email")),
@@ -561,6 +568,8 @@ def update_graph(ride_time, selected_vars, slider_range, vin, email):
         s_num = pd.to_numeric(series, errors="coerce")
         return ((s_num == 1) | s_str.isin(["1", "true", "t", "yes", "y", "on"])).astype(int)
 
+
+
     # Cable Damaged (si existe en DF base o ya mapeado)
     if 'throttle_cable_damaged' in telemetry_df.columns:
         f = to01(telemetry_df['throttle_cable_damaged'])
@@ -611,6 +620,26 @@ def update_graph(ride_time, selected_vars, slider_range, vin, email):
         telemetry_df['dc_bus_negative_volts'] = pd.to_numeric(
             telemetry_df['dc_bus_negative_volts'], errors='coerce'
         )
+
+    ERROR_CODE_VARS = [
+        ('battery_error', 'ErrorCode: Battery'),
+        ('motor_error', 'ErrorCode: Motor'),
+        ('insulation_error', 'ErrorCode: Insulation'),
+        ('derating_battery_error', 'ErrorCode: Derating Battery'),
+        ('derating_igbt_error', 'ErrorCode: Derating IGBT'),
+    ]
+
+    for raw, pretty in ERROR_CODE_VARS:
+        if raw in telemetry_df.columns:
+            s = pd.to_numeric(telemetry_df[raw], errors='coerce')
+            # mantener 0–2; si viniera algo fuera de rango o NaN, saneamos
+            s = s.clip(lower=0, upper=2)
+            if s.notna().any():
+                expanded_rows.append(pd.DataFrame({
+                    'ride_time_min': telemetry_df['ride_time_min'],
+                    'Variable': pretty,
+                    'Value': s
+                }))
 
     # --- Series por cada fault bit (0/1) ---
     # Combinamos fault_bits y fault_bits_raw con OR vectorizado
@@ -707,11 +736,13 @@ def update_graph(ride_time, selected_vars, slider_range, vin, email):
         if any(k in vl for k in ['inv igbt temp', 'gate pcb ntc']):
             return '3_InverterTemp'
         if 'humidity' in vl:
-            return '3_5_Humidity'
+            return '4_Humidity'
         if str(v).startswith('Cell_') or any(k in vl for k in ['v+', 'v-', 'volt', 'dc bus', 'dc link']):
-            return '4_Voltages'
+            return '5_Voltages'
         if 'charger' in vl:
-            return '3_6_Charger'
+            return '6_Charger'
+        if vl.startswith('errorcode:'):
+            return '7_ErrorCodes'
         return '5_Others'
 
     df_expanded['Group'] = df_expanded['Variable'].apply(classify)
@@ -725,7 +756,8 @@ def update_graph(ride_time, selected_vars, slider_range, vin, email):
                   {'label': 'Humidity', 'value': 'Humidity'},
                   {'label': 'Voltages', 'value': 'Voltages'},
                   {'label': 'Flags', 'value': 'Flags'},
-                  {'label': 'Charger', 'value': 'Charger'},# 👈 NUEVO
+                  {'label': 'Charger', 'value': 'Charger'},
+                  {'label': 'Error Codes', 'value': 'Error Codes'},# 👈 NUEVO
               ] + [
                   {'label': v, 'value': v}
                   for v in all_vars
@@ -739,11 +771,12 @@ def update_graph(ride_time, selected_vars, slider_range, vin, email):
                 or 'Humidity' in v
                 or v.startswith('Flag:')
                 or 'Charger' in v
+                or v.startswith('ErrorCode:')
         )
                      and v not in HIDE_BUTTONS
               ]
 
-    sel = selected_vars or ['Flags']
+    sel = selected_vars or ['Flags', 'Error Codes']
     expanded_sel = []
     for v in sel:
         if v == 'Cells':
@@ -771,7 +804,8 @@ def update_graph(ride_time, selected_vars, slider_range, vin, email):
                 'Charger Plugged',
                 'Charging Current (A)'
             ]]
-
+        elif v == 'Error Codes':
+            expanded_sel += [x for x in all_vars if x.startswith('ErrorCode:')]
         else:
             expanded_sel.append(v)
 
