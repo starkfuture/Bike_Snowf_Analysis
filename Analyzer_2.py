@@ -1,5 +1,10 @@
 import subprocess
 import sys
+import os, threading, webbrowser
+import time
+
+start = time.time()
+print("⏳ Iniciando aplicación...")
 
 #-------------------------------------------------------------------
 # IMPLEMENTED BY: MMM + ChatGPT (performance pass)
@@ -11,10 +16,11 @@ import sys
 #   - Basic Flask-Caching to memoize Snowflake reads per VIN/ride/range.
 #   - Lighter legend by default-hiding very dense groups (Cells).
 #   23092025: Adding error codes, creating logging.
+#   25092025: Creation of .exe for Manu
 #-------------------------------------------------------------------
 
 
-version = 2.0
+version = 2.1
 
 HIDE_BUTTONS = {
     'DC Link', 'DC Bus', 'Cable Damaged', 'Battery V-', 'Battery V+',
@@ -35,14 +41,19 @@ required_packages = [
     "flask-caching",
     "plotly-resampler"
 ]
-for package in required_packages:
-    try:
-        __import__(package.replace('-', '_'))
-    except ImportError:
+# No intentes pip install cuando está congelado (PyInstaller)
+IS_FROZEN = getattr(sys, 'frozen', False)
+
+if not IS_FROZEN:
+    for package in required_packages:
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-        except Exception:
-            pass  # allow app to continue even if optional deps fail
+            __import__(package.replace('-', '_'))
+        except ImportError:
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+            except Exception:
+                pass
+
 
 import dash
 from dash import dcc, html, Input, Output, State, ctx
@@ -1043,4 +1054,19 @@ def display_delta(clicked_points):
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    host = "127.0.0.1"
+    port = int(os.environ.get("PORT", "8050"))
+
+    # Evita abrir dos veces cuando el reloader está activo
+    is_reloader_child = os.environ.get("WERKZEUG_RUN_MAIN") == "true"
+
+    # Abre el navegador 0.8 s después de arrancar el servidor (solo proceso principal)
+    if not is_reloader_child:
+        threading.Timer(0.8, lambda: webbrowser.open(f"http://{host}:{port}")).start()
+
+    # Dash v2: usa run_server para ser explícitos
+    print("🚀 Lanzando Dash...")
+    app.run(host=host, port=port, debug=False)
+    print(f"✅ App lista en {time.time()-start:.2f} segundos")
+
+
